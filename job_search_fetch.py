@@ -5,15 +5,16 @@ Usage:  python3 job_search_fetch.py [--known known.json] [--only Medpace,IQVIA] 
 
 known.json = list of {"url","company","role"} (or Notion names "Application URL","Company","Role") for EVERY row in Notion "Job leads", any Status.
 Output: leads.json (survivors of location + title filters, minus already-known) and a per-source log on stderr.
-Hard filters applied here: location (London / UK-remote), title (Senior/Specialist/etc.). Salary, sponsorship wording and
+Hard filters applied here: location (London / UK-remote), title (Senior/Manager/etc.). Specialist, physician/MBBS and
+doctor-focused career-event titles pass with a "check" flag: the advert text decides. Salary, sponsorship wording and
 experience bucket still need the advert text, so the survivors are what you read.
 """
 import argparse, json, re, subprocess, sys, html, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 UA = "Mozilla/5.0"
-TITLE_BAD = re.compile(r"\b(senior|sr\.?|specialist|principal|lead|head|director|manager|consultant|vp|vice president|intern(ship)?|III|IV|V|3)\b", re.I)
-SCOPE_BAD = re.compile(r"nurse|physician|psychiatrist|pharmacist|surgeon|gastroenterolog|hepatolog|oncologist|dermatolog|hematolog|haematolog|pulmonolog|medical monitor|\bchef\b|housekeep|\bsecurity\b|engineer|developer|architect|programmer|devops|\bfinance\b|payroll|\bsales\b|business development|account (executive|manager)|marketing|recruiter|talent acquisition|recruitment (consultant|partner|advisor|business partner)|translator|\brater\b|professor|lecturer|chaplain|technician|electrician|career event|talent community|test req|do not apply|post-?doc|doctoral|fellowship|\b(?!english)[a-z]+[- ]speak(ing|er)\b|\(phd\)|\bexperienced\b|data scientist|statistician|biostatistician|freelance", re.I)
+TITLE_BAD = re.compile(r"\b(senior|sr\.?|principal|lead|head|director|manager|consultant|vp|vice president|intern(ship)?|III|IV|V|3)\b", re.I)
+SCOPE_BAD = re.compile(r"nurse|psychiatrist|pharmacist|surgeon|gastroenterolog|hepatolog|oncologist|dermatolog|hematolog|haematolog|pulmonolog|medical monitor|\bchef\b|housekeep|\bsecurity\b|engineer|developer|architect|programmer|devops|\bfinance\b|payroll|\bsales\b|business development|account (executive|manager)|marketing|recruiter|talent acquisition|recruitment (consultant|partner|advisor|business partner)|translator|\brater\b|professor|lecturer|chaplain|technician|electrician|career event(?!.*\b(medical doctor|mbbs|mb ?chb|physician)\b)|talent community|test req|do not apply|post-?doc|doctoral|fellowship|\b(?!english)[a-z]+[- ]speak(ing|er)\b|\(phd\)|\bexperienced\b|data scientist|statistician|biostatistician|freelance", re.I)
 KEEP_HINT = re.compile(r"research|clinical|trial|study|coordinator|officer|assistant|analyst|project|programme|data|writer|editor|safety|pharmacovigilance|regulatory|medical|feasib|associate|administrator", re.I)   # used for broad university feeds only
 TITLE_OK_PHRASE = re.compile(r"\b(associate|assistant)\b[^/,(]*\bmanager\b", re.I)   # "Associate ... Manager" allowed
 LOC_OK = re.compile(r"london|hammersmith|twickenham|greater london|uk[\s\-–—]*remote|remote[\s,\-–—]*(uk|united kingdom|gb)|united kingdom[\s\-–—]*remote|virtual united kingdom|home[- ]?based.*uk|^united kingdom$|^uk$|^gb$|, gb( remote)?$", re.I)
@@ -30,6 +31,17 @@ def jget(url, post=None, headers=()):
     code, body = sh(url, post, headers=headers)
     if code != "200": raise RuntimeError(f"HTTP {code}")
     return json.loads(body)
+
+SOFT_FLAGS = [   # (pattern, flag) -- these titles pass, but the reader must screen the advert text
+ (re.compile(r"\bspecialist\b", re.I), "SPECIALIST: keep only if the advert says entry level / no experience / graduate"),
+ (re.compile(r"\bphysician\b|medical doctor|\bmbbs\b|mb ?chb", re.I), "PHYSICIAN: keep only if non-patient-facing and no specialty registration required"),
+ (re.compile(r"career event", re.I), "CAREER EVENT: recruitment event, not a single vacancy"),
+]
+ENTRY_HINT = re.compile(r"entry[- ]level|graduate|junior|trainee|no (prior )?experience", re.I)
+def flags(t):
+    out = [f for p, f in SOFT_FLAGS if p.search(t)]
+    if out and ENTRY_HINT.search(t): out.append("title says entry level")
+    return "; ".join(out)
 
 def title_ok(t):
     t2 = TITLE_OK_PHRASE.sub("", t)
@@ -245,12 +257,12 @@ def main():
                 if strip(j["url"]) in kurl or (ckey(j["company"]), norm(j["title"])) in kcr: c["known"] += 1; continue
                 if strip(j["url"]) in seen: continue
                 seen.add(strip(j["url"]))
-                c["kept"] += 1; j["source"] = n; j.pop("_detail", None); leads.append(j)
+                c["kept"] += 1; j["source"] = n; j["check"] = flags(j["title"]); j.pop("_detail", None); leads.append(j)
             log.append((n, f"{len(jobs)} found", f"filtered: {c['loc']} location, {c['title']} title, {c['known']} already logged; kept {c['kept']}"))
     json.dump(leads, open(a.out, "w"), indent=1)
     for n, a1, b1 in log: print(f"{n:14} {a1:14} {b1}", file=sys.stderr)
     for j in leads:
-        try: print(f"{j['source']:12} | {j['title'][:70]:70} | {j['location'][:50]:50} | {j['url']}")
+        try: print(f"{j['source']:12} | {j['title'][:70]:70} | {j['location'][:50]:50} | {j['url']}" + (f"  [CHECK {j['check']}]" if j["check"] else ""))
         except BrokenPipeError: break
 
 if __name__ == "__main__": main()
